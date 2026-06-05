@@ -51,43 +51,43 @@ The project is structured into three main layers:
 
 ```mermaid
 graph TD
-    subgraph Frontend [React + Vite + Tailwind CSS]
-        UI[BirthDetailsForm & ChatInterface]
-        Store[localStorage Session ID]
-        SSE[SSE Stream Reader]
+    subgraph Frontend["React + Vite + Tailwind CSS"]
+        UI["BirthDetailsForm and ChatInterface"]
+        Store["localStorage Session ID"]
+        SSE["SSE Stream Reader"]
     end
 
-    subgraph Backend [FastAPI]
-        API[FastAPI Router]
-        RateLimit[SlowAPI Rate Limiter]
-        Graph[LangGraph StateGraph]
-        DB[(SQLite Session Store)]
+    subgraph Backend["FastAPI"]
+        API["FastAPI Router"]
+        RateLimit["SlowAPI Rate Limiter"]
+        Graph["LangGraph StateGraph"]
+        DB[("SQLite Session Store")]
     end
 
-    subgraph Offline Services & Local Calculations
-        Ephem[ephem Astrology Engine]
-        TZ[timezonefinder offline TZ]
-        Chroma[(Chroma DB - Vector Store)]
+    subgraph OfflineServices["Offline Services and Local Calculations"]
+        Ephem["ephem Astrology Engine"]
+        TZ["timezonefinder offline TZ"]
+        Chroma[("Chroma DB - Vector Store")]
     end
 
-    subgraph External APIs (Keyed & Free)
-        Geopy[Nominatim Geocoding API]
-        Cohere[Cohere Embeddings API]
-        Groq[Groq API: Llama 3.3 70B]
+    subgraph ExternalAPIs["External APIs - Keyed and Free"]
+        Geopy["Nominatim Geocoding API"]
+        Cohere["Cohere Embeddings API"]
+        Groq["Groq API - Llama 3.3 70B"]
     end
 
-    UI -->|1. Submit Birth Data| API
-    UI -->|4. Chat & Stream| SSE
-    API -->|Rate Limit Check| RateLimit
-    API -->|Retrieve/Save Session| DB
-    API -->|Execute Agent| Graph
-    Graph -->|Route / Reason| Groq
-    Graph -->|Geocode City| Geopy
-    Graph -->|Offline Timezone Offset| TZ
-    Graph -->|Calculate Positions & Houses| Ephem
-    Graph -->|Embed & Retrieve| Cohere
-    Cohere -->|Query Vector Store| Chroma
-    SSE -->|Stream Chunks| UI
+    UI -->|"1. Submit Birth Data"| API
+    UI -->|"4. Chat and Stream"| SSE
+    API -->|"Rate Limit Check"| RateLimit
+    API -->|"Retrieve/Save Session"| DB
+    API -->|"Execute Agent"| Graph
+    Graph -->|"Route / Reason"| Groq
+    Graph -->|"Geocode City"| Geopy
+    Graph -->|"Offline Timezone Offset"| TZ
+    Graph -->|"Calculate Positions and Houses"| Ephem
+    Graph -->|"Embed and Retrieve"| Cohere
+    Cohere -->|"Query Vector Store"| Chroma
+    SSE -->|"Stream Chunks"| UI
 ```
 
 ### 🔄 Agent Execution Flow
@@ -96,19 +96,19 @@ graph TD
 sequenceDiagram
     autonumber
     actor User
-    participant FE as Frontend (React)
-    participant BE as Backend (FastAPI)
-    participant LG as LangGraph (StateGraph)
+    participant FE as Frontend
+    participant BE as Backend
+    participant LG as LangGraph
     participant Tools as Agent Tools
-    participant LLM as Groq (Llama 3 70B)
+    participant LLM as Groq LLM
 
-    User->>FE: Enter Birth Details & Submit
-    FE->>BE: POST /chat (session_id, birth_data)
-    BE->>LG: Initialize State & Start Graph
-    LG->>Tools: Call geocode_place (Nominatim + timezonefinder)
-    Tools-->>LG: Coordinates & Timezone Offset
-    LG->>Tools: Call compute_birth_chart (ephem-based calculation)
-    Tools-->>LG: Natal planetary positions & Placidus houses
+    User->>FE: Enter Birth Details and Submit
+    FE->>BE: POST /chat with session_id and birth_data
+    BE->>LG: Initialize State and Start Graph
+    LG->>Tools: Call geocode_place
+    Tools-->>LG: Coordinates and Timezone Offset
+    LG->>Tools: Call compute_birth_chart
+    Tools-->>LG: Natal planetary positions and Placidus houses
     LG->>LLM: Generate initial astrological analysis
     LLM-->>LG: Analysis text
     LG->>BE: Stream output chunks via SSE
