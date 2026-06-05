@@ -126,8 +126,12 @@ async def chat_endpoint(request: Request, payload: ChatRequest):
             async for event in agent_app.astream_events(initial_state, version="v2"):
                 kind = event["event"]
 
-                # A. Token stream chunk
+                # A. Token stream chunk — only from the reasoning node, not the router
                 if kind == "on_chat_model_stream":
+                    # Filter: only stream tokens from the reasoning node
+                    node_name = event.get("metadata", {}).get("langgraph_node", "")
+                    if node_name != "reasoning":
+                        continue
                     token = event["data"]["chunk"].content
                     if token:
                         full_response += token

@@ -67,7 +67,7 @@ def get_llm():
         return MockLLM()
         
     return ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="llama-3.3-70b-versatile",
         temperature=0.2,
         groq_api_key=GROQ_API_KEY
     )
