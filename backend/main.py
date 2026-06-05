@@ -132,26 +132,29 @@ async def chat_endpoint(request: Request, payload: ChatRequest):
 
                 # B. Tool activity started
                 elif kind == "on_tool_start":
-                    yield f"data: {json.dumps({
+                    tool_start_payload = json.dumps({
                         'tool_start': event['name'],
                         'arguments': event['data'].get('input')
-                    })}\n\n"
+                    })
+                    yield f"data: {tool_start_payload}\n\n"
 
                 # C. Tool activity completed
                 elif kind == "on_tool_end":
                     # Capture chart_data output from compute_birth_chart to save it to DB
                     output = event["data"].get("output")
-                    yield f"data: {json.dumps({
+                    tool_end_payload = json.dumps({
                         'tool_end': event['name'],
                         'output': output
-                    })}\n\n"
+                    })
+                    yield f"data: {tool_end_payload}\n\n"
                     
                 # Capture the final state updates from LangGraph execution
                 elif kind == "on_chain_end" and event["name"] == "LangGraph":
                     last_step_state = event["data"].get("output", {})
 
         except Exception as e:
-            yield f"data: {json.dumps({'error': f'Internal agent execution error: {str(e)}'})}\n\n"
+            error_payload = json.dumps({'error': f'Internal agent execution error: {str(e)}'})
+            yield f"data: {error_payload}\n\n"
 
         # Save assistant's response to SQLite
         if full_response:
