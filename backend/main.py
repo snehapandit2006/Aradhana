@@ -49,8 +49,14 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Runs database schemas migration on startup."""
+    """Runs database schemas migration and seeds Chroma DB on startup."""
     await init_db()
+    try:
+        from rag.seed import seed_database
+        seed_database()
+    except Exception as e:
+        print(f"Startup seeding failed: {e}")
+
 
 @app.post("/chat")
 @limiter.limit("20/minute")

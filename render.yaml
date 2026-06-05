@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: astroagent-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        value: ./astroagent.db
+      - key: ALLOWED_ORIGIN
+        value: https://your-vercel-app-url.vercel.app # Configure to match your Vercel deployment URL
