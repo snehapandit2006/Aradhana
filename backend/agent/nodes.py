@@ -7,7 +7,7 @@ from langchain_groq import ChatGroq
 
 from agent.state import AgentState
 from agent.tools import geocode_place, compute_birth_chart, get_daily_transits, knowledge_lookup
-from utils.safety import apply_safety_guardrails, sanitize_input
+from utils.safety import apply_safety_guardrails, sanitize_input, has_certainty_or_risk_claims, DISCLAIMER
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -67,7 +67,7 @@ def get_llm():
         return MockLLM()
         
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         temperature=0.2,
         groq_api_key=GROQ_API_KEY
     )
@@ -89,7 +89,7 @@ def router_node(state: AgentState) -> Dict[str, Any]:
     if not last_user_message:
         return {"intent": "greetings"}
 
-    # Use LLM to classify intent
+    # Use LLM to classify intent with retry backoff for rate limits
     llm = get_llm()
     system_prompt = (
         "You are an intent classifier. Categorize the user's input into one of these categories:\n"
@@ -101,13 +101,22 @@ def router_node(state: AgentState) -> Dict[str, Any]:
         "Return ONLY the category name as a single word, no punctuation or extra text."
     )
     
-    try:
-        res = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=last_user_message)])
-        intent = res.content.strip().lower().replace("'", "").replace('"', "")
-        if intent not in ["greetings", "chart_calculation", "daily_transit", "general_rag", "off_topic"]:
-            intent = "general_rag"
-    except Exception:
-        intent = "general_rag"
+    intent = "general_rag"
+    import time
+    for attempt in range(5):
+        try:
+            res = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=last_user_message)])
+            intent = res.content.strip().lower().replace("'", "").replace('"', "")
+            if intent not in ["greetings", "chart_calculation", "daily_transit", "general_rag", "off_topic"]:
+                intent = "general_rag"
+            break
+        except Exception as e:
+            if "429" in str(e) and attempt < 4:
+                print(f"[router_node Rate Limit 429] Retrying intent classification in 5s... (Attempt {attempt+1}/5)")
+                time.sleep(5)
+            else:
+                intent = "general_rag"
+                break
 
     return {"intent": intent}
 
@@ -135,9 +144,13 @@ def reasoning_node(state: AgentState) -> Dict[str, Any]:
         "1. If the user's birth data is provided, use the tools to geocode and compute their birth chart immediately.\n"
         "2. If you need historical astrology knowledge, use 'knowledge_lookup'.\n"
         "3. Do not formulate certainty claims or absolute guarantees about outcomes (medical, legal, or financial). "
-        "Be gentle and reflective.\n"
+        "Be gentle and reflective. Do NOT use the words 'promise', 'guarantee', 'definitely', 'undoubtedly', or '100%' anywhere in your response (not even in negative contexts like 'I cannot promise'). Use words like 'likelihood', 'reflect', 'potential', or 'possibility' instead.\n"
         "4. If the user asks off-topic questions (e.g., weather, history, maths), politely guide them back "
         "to their astrological journey.\n"
+        "5. If the user requests calculations for a clearly invalid date/time (e.g. month 15, day 45) or year outside the range 1800-2100, "
+        "refuse the calculation politely and guide them to provide correct parameters for their birth chart instead.\n"
+        "6. Always use the returned output of your tools (e.g. knowledge_lookup or compute_birth_chart) to answer the user's questions directly and accurately. Do not say you need data or that you will lookup if the tool has already returned the results.\n"
+        "7. Loop prevention: If you have already queried 'knowledge_lookup' for a topic and it returned empty or no results, do not make another query for the same topic. Answer with a gentle reflection instead.\n"
     )
 
     # Inject active state data into system prompt context
@@ -162,17 +175,29 @@ def reasoning_node(state: AgentState) -> Dict[str, Any]:
 
     full_system_message = SystemMessage(content=system_instruction + context)
 
-    # Bind tools to the LLM
+    # Bind tools to the LLM only if intent is not off-topic
     llm = get_llm()
-    llm_with_tools = llm.bind_tools(tools_list)
+    if intent == "off_topic":
+        llm_with_tools = llm
+    else:
+        llm_with_tools = llm.bind_tools(tools_list)
 
     # Prepare message chain
     messages_payload = [full_system_message] + list(messages)
 
-    try:
-        response = llm_with_tools.invoke(messages_payload)
-    except Exception as e:
-        response = AIMessage(content=f"An error occurred while connecting to the stars: {str(e)}")
+    # Try to invoke LLM with retry loop for rate limits
+    import time
+    for attempt in range(5):
+        try:
+            response = llm_with_tools.invoke(messages_payload)
+            break
+        except Exception as e:
+            if "429" in str(e) and attempt < 4:
+                print(f"[reasoning_node Rate Limit 429] Retrying model invoke in 5s... (Attempt {attempt+1}/5)")
+                time.sleep(5)
+            else:
+                response = AIMessage(content=f"An error occurred while connecting to the stars: {str(e)}")
+                break
 
     return {
         "messages": [response],
@@ -257,18 +282,45 @@ def tool_node(state: AgentState) -> Dict[str, Any]:
 def safety_guardrail_node(state: AgentState) -> Dict[str, Any]:
     """
     Intercepts the final AI response and appends a disclaimer if high-certainty medical,
-    legal, or financial claims are detected.
+    legal, or financial claims are detected in either the query or response.
     """
     messages = state.get("messages", [])
     if not messages:
         return {}
 
     last_message = messages[-1]
+    
+    # If the last message is not an AIMessage (e.g. it is a ToolMessage because step budget was exceeded),
+    # construct an AIMessage fallback.
+    if not isinstance(last_message, AIMessage):
+        refusal = (
+            "I was reflecting on your query, but I could not formulate a clear astrological response. "
+            "Let us return to your birth chart journey."
+        )
+        user_msg = ""
+        for m in reversed(messages):
+            if isinstance(m, HumanMessage):
+                user_msg = m.content
+                break
+        if user_msg and has_certainty_or_risk_claims(user_msg):
+            refusal += DISCLAIMER
+        return {"messages": [AIMessage(content=refusal)]}
+
     # Check if the final node output is an AI Message
     if isinstance(last_message, AIMessage) and last_message.content:
         original_content = last_message.content
         sanitized_content = apply_safety_guardrails(original_content)
         
+        # Also check the user's prompt for risk topics to guarantee a disclaimer is appended
+        user_msg = ""
+        for m in reversed(messages):
+            if isinstance(m, HumanMessage):
+                user_msg = m.content
+                break
+                
+        if user_msg and has_certainty_or_risk_claims(user_msg) and "Disclaimer:" not in sanitized_content:
+            sanitized_content += DISCLAIMER
+            
         if sanitized_content != original_content:
             # Overwrite message content with the guarded version
             last_message.content = sanitized_content

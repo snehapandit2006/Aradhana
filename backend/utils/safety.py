@@ -9,7 +9,7 @@ CERTAINTY_PATTERNS = [
 # Medical, financial, and legal warning triggers (e.g. "cure", "invest", "lawsuit", "sue", "doctor", "diagnose")
 RISK_TOPICS = [
     r"\b(cure|heal|treat|disease|illness|diagnose|medication|pill|doctor|health)\b",
-    r"\b(invest|stock|buy|sell|bitcoin|crypto|wealth|rich|lottery|millionaire|finance)\b",
+    r"\b(invest|stock|buy|sell|bitcoin|crypto|wealth|rich|lottery|millionaire|finance|gamble|blackjack|casino|bet|assets|money)\b",
     r"\b(sue|court|lawsuit|legal|attorney|lawyer|police|judge)\b",
 ]
 
@@ -58,7 +58,7 @@ def apply_safety_guardrails(response_text: str) -> str:
     text_cleaned = re.sub(r"\bdefinitely\b", "likely", text_cleaned, flags=re.IGNORECASE)
     text_cleaned = re.sub(r"\bguaranteed\b", "likely", text_cleaned, flags=re.IGNORECASE)
     text_cleaned = re.sub(r"\bundoubtedly\b", "likely", text_cleaned, flags=re.IGNORECASE)
-    text_cleaned = re.sub(r"\bpromise\b", "suggest", text_cleaned, flags=re.IGNORECASE)
+    text_cleaned = re.sub(r"\bpromises?\b", "suggest", text_cleaned, flags=re.IGNORECASE)
     text_cleaned = re.sub(r"\b100%\b", "highly likely", text_cleaned, flags=re.IGNORECASE)
         
     # Check if disclaimer is already present to prevent duplicate appending
