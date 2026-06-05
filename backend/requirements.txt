@@ -1,0 +1,52 @@
+# ── AstroAgent Backend Dependencies ────────────────────────────────
+# Pinned for mutual compatibility with LangGraph 0.2.x.
+# Install with: pip install -r requirements.txt
+#
+# Geocoding: uses Nominatim (OpenStreetMap) + timezonefinder instead
+# of Google APIs — no API key or billing account required.
+# Ephemeris: uses ephem for real planetary calculations — pure Python,
+# no C compilation, pre-built wheels available for Windows.
+
+# ── Web Framework ───────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+sse-starlette==1.8.2          # Server-Sent Events for FastAPI streaming
+python-multipart==0.0.9       # Required by FastAPI for form parsing
+
+# ── Agent Framework ─────────────────────────────────────────────────
+langgraph==0.2.4
+langchain-core==0.2.10        # Pinned — LangGraph 0.2.x requires <0.3
+langchain-groq==0.1.6         # Groq LLM provider for LangChain/LangGraph
+
+# ── Astrology ───────────────────────────────────────────────────────
+ephem==4.1.5                   # Real planetary ephemeris, pure Python,
+                               # pre-built Windows wheels, no C compile needed
+
+# ── Geocoding (no API key needed) ───────────────────────────────────
+geopy==2.4.1                   # Nominatim/OpenStreetMap geocoding
+timezonefinder==6.5.2          # Offline timezone lookup from lat/lon
+pytz==2024.1                   # Timezone offset calculations
+requests==2.32.3               # General HTTP (kept for any other calls)
+
+# ── RAG / Vector Store ──────────────────────────────────────────────
+chromadb==0.5.3                # Local persistent vector database
+cohere==5.5.8                  # Cohere embeddings (embed-english-v3.0)
+
+# ── Data Validation ─────────────────────────────────────────────────
+pydantic==2.7.4                # Request/response schemas
+pydantic-settings==2.3.4       # .env loading via BaseSettings
+
+# ── Rate Limiting ───────────────────────────────────────────────────
+slowapi==0.1.9                 # FastAPI rate limiter (wraps limits library)
+
+# ── Database ────────────────────────────────────────────────────────
+aiosqlite==0.20.0              # Async SQLite for session persistence
+
+# ── Utilities ───────────────────────────────────────────────────────
+python-dotenv==1.0.1           # Load .env into os.environ
+python-jose[cryptography]==3.3.0  # UUID / token utilities (session IDs)
+
+# ── Evaluation Harness ──────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7
+httpx==0.27.0                  # Async HTTP client for eval runner
