@@ -15,7 +15,7 @@ python-multipart==0.0.9       # Required by FastAPI for form parsing
 
 # ── Agent Framework ─────────────────────────────────────────────────
 langgraph==0.2.4
-langchain-core==0.2.10        # Pinned — LangGraph 0.2.x requires <0.3
+langchain-core==0.2.27        # Pinned — LangGraph 0.2.4 requires >=0.2.27,<0.3
 langchain-groq==0.1.6         # Groq LLM provider for LangChain/LangGraph
 
 # ── Astrology ───────────────────────────────────────────────────────
