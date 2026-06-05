@@ -21,6 +21,8 @@ def run_coordinate_assertion(birth_data, expected_lat, expected_lon, tolerance):
     """Asserts that geocoding output coordinates fall within a tolerance range."""
     place = birth_data["place"]
     try:
+        import time
+        time.sleep(1.0)
         res = geocode_place(place)
         lat_diff = abs(res["lat"] - expected_lat)
         lon_diff = abs(res["lon"] - expected_lon)
@@ -33,6 +35,8 @@ def run_coordinate_assertion(birth_data, expected_lat, expected_lon, tolerance):
 def run_chart_math_assertion(birth_data, assertion):
     """Computes birth chart and asserts planetary longitudes match expected within tolerance, handling wraparounds."""
     try:
+        import time
+        time.sleep(1.0)
         chart = compute_birth_chart(
             date=birth_data["date"],
             time=birth_data.get("time"),
@@ -122,7 +126,7 @@ async def execute_evals():
     print("=== ASTROAGENT EVALUATION HARNESS ===")
     
     # Check for keys
-    if not os.getenv("GROQ_API_KEY") or not os.getenv("GOOGLE_GEOCODING_API_KEY"):
+    if not os.getenv("GROQ_API_KEY") or not os.getenv("COHERE_API_KEY"):
         print("WARNING: API keys are not configured. Assertions involving live APIs may fail.")
 
     if not os.path.exists(EVALS_FILE):

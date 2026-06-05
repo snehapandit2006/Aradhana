@@ -2,121 +2,64 @@ import os
 import requests
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from flatlib.datetime import Datetime
-from flatlib.geopos import GeoPos
-from flatlib.chart import Chart
-from flatlib import const
-from flatlib import aspects
+from geopy.geocoders import Nominatim
+from timezonefinder import TimezoneFinder
+import pytz
 
 # Import RAG retriever helper
 from rag.retriever import retrieve
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_GEOCODING_API_KEY")
+# Import ephem-based calculations
+from astro.ephemeris import compute_chart, compute_transits
 
 def geocode_place(place_name: str) -> dict:
     """
-    Geocodes a place name using Google Geocoding API and retrieves its timezone offset using Google Timezone API.
-    Returns: { 'lat': float, 'lon': float, 'timezone_offset': str, 'formatted_address': str }
+    Resolve place name to coordinates and timezone.
+    Uses Nominatim (OpenStreetMap) + timezonefinder — no API key needed.
     """
-    if not GOOGLE_API_KEY or GOOGLE_API_KEY.strip() == "" or GOOGLE_API_KEY == "your_google_api_key_here":
-        print(f"Warning: GOOGLE_GEOCODING_API_KEY is not set. Using fallback coordinates for '{place_name}'.")
-        if "mumbai" in place_name.lower():
-            return {
-                "lat": 19.0760,
-                "lon": 72.8770,
-                "timezone_offset": "+05:30",
-                "timezone_offset_hours": 5.5,
-                "formatted_address": "Mumbai, Maharashtra, India"
-            }
-        return {
-            "lat": 28.6139,
-            "lon": 77.2090,
-            "timezone_offset": "+05:30",
-            "timezone_offset_hours": 5.5,
-            "formatted_address": "New Delhi, Delhi, India"
-        }
+    geolocator = Nominatim(user_agent="astroagent_v1")
+    location = geolocator.geocode(place_name, timeout=10)
 
-    # 1. Get Lat/Lon
-    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
-    geo_params = {"address": place_name, "key": GOOGLE_API_KEY}
-    
-    try:
-        response = requests.get(geocode_url, params=geo_params, timeout=10)
-        res_json = response.json()
-    except Exception as e:
-        raise ValueError(f"Failed to connect to Google Geocoding API: {e}")
+    if not location:
+        raise ValueError(
+            f"Could not geocode '{place_name}'. "
+            "Try a more specific name e.g. 'Lucknow, India'."
+        )
 
-    if res_json.get("status") != "OK" or not res_json.get("results"):
-        raise ValueError(f"Geocoding failed for '{place_name}': {res_json.get('status', 'Unknown error')}")
+    lat = location.latitude
+    lon = location.longitude
 
-    result = res_json["results"][0]
-    lat = result["geometry"]["location"]["lat"]
-    lon = result["geometry"]["location"]["lng"]
-    formatted_address = result["formatted_address"]
+    # Timezone from coordinates — fully offline
+    tf = TimezoneFinder()
+    tz_name = tf.timezone_at(lat=lat, lng=lon)
 
-    # 2. Get Timezone Offset
-    timezone_url = "https://maps.googleapis.com/maps/api/timezone/json"
-    now_ts = int(datetime.utcnow().timestamp())
-    tz_params = {"location": f"{lat},{lon}", "timestamp": now_ts, "key": GOOGLE_API_KEY}
+    if not tz_name:
+        raise ValueError(f"Could not determine timezone for {place_name}")
 
-    try:
-        tz_response = requests.get(timezone_url, params=tz_params, timeout=10)
-        tz_json = tz_response.json()
-    except Exception as e:
-        raise ValueError(f"Failed to connect to Google Timezone API: {e}")
+    # Get UTC offset as float (e.g. 5.5 for IST)
+    tz = pytz.timezone(tz_name)
+    offset_seconds = tz.utcoffset(datetime.now()).total_seconds()
+    offset_hours = offset_seconds / 3600
 
-    if tz_json.get("status") != "OK":
-        raise ValueError(f"Timezone resolution failed: {tz_json.get('status', 'Unknown error')}")
-
-    raw_offset = tz_json.get("rawOffset", 0)
-    dst_offset = tz_json.get("dstOffset", 0)
-    total_offset_seconds = raw_offset + dst_offset
-
-    # Convert total offset to +/-HH:MM string format
-    sign = "+" if total_offset_seconds >= 0 else "-"
-    abs_seconds = abs(total_offset_seconds)
-    hours = int(abs_seconds // 3600)
-    minutes = int((abs_seconds % 3600) // 60)
+    # Format as '+05:30' string
+    sign = "+" if offset_hours >= 0 else "-"
+    abs_hours = abs(offset_hours)
+    hours = int(abs_hours)
+    minutes = int((abs_hours - hours) * 60)
     offset_str = f"{sign}{hours:02d}:{minutes:02d}"
-    offset_hours = total_offset_seconds / 3600.0
 
     return {
         "lat": lat,
         "lon": lon,
-        "timezone_offset": offset_str,
+        "timezone_id": tz_name,
         "timezone_offset_hours": offset_hours,
-        "formatted_address": formatted_address
+        "timezone_offset": offset_str,
+        "formatted_address": location.address
     }
-
-def find_planet_house(chart: Chart, planet_obj) -> int:
-    """
-    Robust helper to identify which house a planet is in.
-    First tries flatlib's built-in inHouse boundary checks.
-    Falls back to a manual cusp longitude-range comparison.
-    """
-    for i in range(1, 13):
-        h = chart.get(f"House{i}")
-        if h.inHouse(planet_obj):
-            return i
-            
-    # Fallback range calculation (especially for edge crossings at 0/360 degrees)
-    p_lon = planet_obj.lon
-    cusps = [chart.get(f"House{i}").lon for i in range(1, 13)]
-    for i in range(12):
-        c1 = cusps[i]
-        c2 = cusps[(i + 1) % 12]
-        if c1 <= c2:
-            if c1 <= p_lon < c2:
-                return i + 1
-        else: # Crosses Aries point (0 degrees)
-            if p_lon >= c1 or p_lon < c2:
-                return i + 1
-                
-    return 1  # Default fallback if boundary checks mismatch
 
 def compute_birth_chart(date: str, time: Optional[str], place: str, time_unknown: bool = False) -> dict:
     """
-    Computes birth chart planetary positions and houses using flatlib.
+    Computes birth chart planetary positions and houses using real ephemeris.
     date: YYYY-MM-DD
     time: HH:MM
     place: City/Town name
@@ -131,57 +74,19 @@ def compute_birth_chart(date: str, time: Optional[str], place: str, time_unknown
     # Handle unknown birth time by defaulting to noon
     time_str = "12:00" if (time_unknown or not time) else time
     
-    # Format date to flatlib expected YYYY/MM/DD
-    date_formatted = date.replace("-", "/")
+    # Compute using ephemeris module
+    ephem_chart = compute_chart(date, time_str, lat, lon, offset_hours)
     
-    # Create flatlib DateTime and GeoPos objects
-    flat_date = Datetime(date_formatted, time_str, offset_hours)
-    flat_pos = GeoPos(lat, lon)
-    
-    # Compute Chart
-    chart = Chart(flat_date, flat_pos)
-    
-    # Extract Planets
-    planets_to_extract = [
-        (const.SUN, "Sun"),
-        (const.MOON, "Moon"),
-        (const.MERCURY, "Mercury"),
-        (const.VENUS, "Venus"),
-        (const.MARS, "Mars"),
-        (const.JUPITER, "Jupiter"),
-        (const.SATURN, "Saturn"),
-        (const.URANUS, "Uranus"),
-        (const.NEPTUNE, "Neptune"),
-        (const.PLUTO, "Pluto")
-    ]
-    
-    planets_data = {}
-    for const_id, name in planets_to_extract:
-        p_obj = chart.get(const_id)
-        house_num = find_planet_house(chart, p_obj)
-        planets_data[name] = {
-            "sign": p_obj.sign,
-            "degree": round(p_obj.signlon, 2),
-            "longitude": round(p_obj.lon, 2),
-            "house": house_num
-        }
-        
-    # Extract Ascendant
-    asc_obj = chart.get(const.ASC)
-    asc_data = {
-        "sign": asc_obj.sign,
-        "degree": round(asc_obj.signlon, 2),
-        "longitude": round(asc_obj.lon, 2)
-    }
-    
-    # Extract Houses
+    # Convert houses to expected format
     houses_data = {}
+    from astro.ephemeris import longitude_to_sign
     for i in range(1, 13):
-        h_obj = chart.get(f"House{i}")
+        h_lon = float(ephem_chart["houses"][str(i)])
+        h_sign, h_deg = longitude_to_sign(h_lon)
         houses_data[f"House{i}"] = {
-            "sign": h_obj.sign,
-            "degree": round(h_obj.signlon, 2),
-            "longitude": round(h_obj.lon, 2)
+            "sign": h_sign,
+            "degree": round(h_deg, 2),
+            "longitude": round(h_lon, 2)
         }
         
     return {
@@ -189,8 +94,8 @@ def compute_birth_chart(date: str, time: Optional[str], place: str, time_unknown
         "coordinates": {"lat": lat, "lon": lon},
         "timezone_offset": offset_str,
         "timezone_offset_hours": offset_hours,
-        "planets": planets_data,
-        "ascendant": asc_data,
+        "planets": ephem_chart["planets"],
+        "ascendant": ephem_chart["ascendant"],
         "houses": houses_data
     }
 
@@ -200,75 +105,27 @@ def get_daily_transits(natal_chart: dict, date: str) -> dict:
     natal_chart: Calculated chart dict from compute_birth_chart.
     date: YYYY-MM-DD
     """
-    # 1. Resolve transit positions on date
-    # Standard location: use the user's birth location coordinates to calculate local transit alignments
     coords = natal_chart.get("coordinates", {"lat": 0.0, "lon": 0.0})
     lat = coords["lat"]
     lon = coords["lon"]
-    offset_hours = natal_chart.get("timezone_offset_hours", 0.0)
     
-    date_formatted = date.replace("-", "/")
-    flat_date = Datetime(date_formatted, "12:00", offset_hours)  # Noon transits
-    flat_pos = GeoPos(lat, lon)
-    
-    transit_chart = Chart(flat_date, flat_pos)
-    
-    planets_to_extract = [
-        (const.SUN, "Sun"),
-        (const.MOON, "Moon"),
-        (const.MERCURY, "Mercury"),
-        (const.VENUS, "Venus"),
-        (const.MARS, "Mars"),
-        (const.JUPITER, "Jupiter"),
-        (const.SATURN, "Saturn"),
-        (const.URANUS, "Uranus"),
-        (const.NEPTUNE, "Neptune"),
-        (const.PLUTO, "Pluto")
-    ]
-    
-    transit_planets = {}
-    for const_id, name in planets_to_extract:
-        p_obj = transit_chart.get(const_id)
-        transit_planets[name] = p_obj.lon
-        
-    # 2. Compare transits to natal longitudes mathematically to find aspects
-    natal_planets = natal_chart.get("planets", {})
-    
-    aspects_to_check = {
-        0: "Conjunction",
-        60: "Sextile",
-        90: "Square",
-        120: "Trine",
-        180: "Opposition"
-    }
+    transit_res = compute_transits(natal_chart, date, lat, lon)
     
     active_transits = []
-    
-    for t_name, t_lon in transit_planets.items():
-        for n_name, n_data in natal_planets.items():
-            n_lon = n_data.get("longitude")
-            if n_lon is None:
-                continue
-                
-            # Compute angular separation
-            diff = abs(t_lon - n_lon)
-            if diff > 180:
-                diff = 360 - diff
-                
-            # Check major aspects (within 8 degree orb)
-            for angle, asp_name in aspects_to_check.items():
-                orb = abs(diff - angle)
-                if orb <= 8.0:
-                    # Provide interpretation hint based on standard astrology
-                    interpretation_hint = f"Transiting {t_name} forms a {asp_name} with natal {n_name} (orb: {orb:.2f}°)."
-                    active_transits.append({
-                        "transit_planet": t_name,
-                        "aspect": asp_name,
-                        "natal_planet": n_name,
-                        "orb": round(orb, 2),
-                        "interpretation_hint": interpretation_hint
-                    })
-                    
+    for asp in transit_res.get("aspects", []):
+        t_name = asp["transit_planet"]
+        asp_name = asp["aspect"]
+        n_name = asp["natal_planet"]
+        orb = asp["orb"]
+        interpretation_hint = f"Transiting {t_name} forms a {asp_name} with natal {n_name} (orb: {orb:.2f}°)."
+        active_transits.append({
+            "transit_planet": t_name,
+            "aspect": asp_name,
+            "natal_planet": n_name,
+            "orb": orb,
+            "interpretation_hint": interpretation_hint
+        })
+        
     return {"date": date, "transits": active_transits}
 
 def knowledge_lookup(query: str) -> str:

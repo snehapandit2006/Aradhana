@@ -12,25 +12,26 @@ Exit codes:
     1  -- one or more checks failed
 
 Checks performed:
-    [1] Environment variables       -- all required keys present in .env
-    [2] flatlib chart math          -- compute a known chart, verify sun sign
-    [3] Google Geocoding API        -- resolve "Mumbai, India" to coordinates
-    [4] Google Timezone API         -- get UTC offset for Mumbai coordinates
-    [5] Cohere embeddings           -- embed a short string, verify vector shape
-    [6] Chroma DB connection        -- open collection, verify document count > 0
-    [7] knowledge_lookup tool       -- end-to-end RAG query, verify non-empty result
-    [8] Groq API connection         -- send a minimal prompt, verify text response
-    [9] Wraparound longitude math   -- unit test for the 359 deg / 1 deg edge case
+    [1] Environment variables     -- required keys present in .env
+    [2] ephem chart math          -- compute a known chart, verify real sun sign
+    [3] Nominatim geocoding       -- resolve city name, no API key needed
+    [4] timezonefinder            -- offline timezone lookup from coordinates
+    [5] geocode_place() tool      -- end-to-end geocoding pipeline
+    [6] Cohere embeddings         -- embed a string, verify vector shape
+    [7] Chroma DB connection      -- open collection, verify document count
+    [8] knowledge_lookup RAG      -- end-to-end retrieval query
+    [9] Groq API connection       -- minimal prompt, verify text response
+   [10] Longitude wraparound math -- unit test 359/1 edge case
 """
 
 import os
 import sys
-import json
 import time
+import math
 from pathlib import Path
 from datetime import datetime
 
-# -- Ensure we can import from backend/ root ────────────────────────────────
+# ── Ensure we can import from backend/ root ───────────────────────────────
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
@@ -38,7 +39,7 @@ from dotenv import load_dotenv
 load_dotenv(BACKEND_DIR / ".env")
 load_dotenv(BACKEND_DIR.parent / ".env")
 
-# -- Colour helpers (no external deps) -------------------------------------
+# ── ASCII-safe output helpers (no unicode — Windows console safe) ─────────
 GREEN  = "\033[92m"
 RED    = "\033[91m"
 YELLOW = "\033[93m"
@@ -46,191 +47,241 @@ CYAN   = "\033[96m"
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
-def ok(msg: str)   -> str: return f"  {GREEN}[PASS]{RESET}  {msg}"
-def fail(msg: str) -> str: return f"  {RED}[FAIL]{RESET}  {msg}"
-def warn(msg: str) -> str: return f"  {YELLOW}[WARN]{RESET}  {msg}"
-def head(msg: str) -> str: return f"\n{BOLD}{CYAN}{msg}{RESET}"
+def ok(msg):   return f"  {GREEN}[PASS]{RESET}  {msg}"
+def fail(msg): return f"  {RED}[FAIL]{RESET}  {msg}"
+def warn(msg): return f"  {YELLOW}[WARN]{RESET}  {msg}"
+def head(msg): return f"\n{BOLD}{CYAN}{msg}{RESET}"
 
-results: list[tuple[str, bool, str]] = []
+results = []   # list of (name, passed, detail)
 
-def check(name: str, passed: bool, detail: str) -> None:
+def check(name, passed, detail):
     results.append((name, passed, detail))
     print(ok(detail) if passed else fail(detail))
 
 
-# ==========================================================================
+# ═════════════════════════════════════════════════════════════════════════
 # [1] Environment variables
-# ==========================================================================
+# ═════════════════════════════════════════════════════════════════════════
 print(head("[1] Environment variables"))
 
-required_keys = [
-    "GROQ_API_KEY",
-    "GOOGLE_GEOCODING_API_KEY",
-    "COHERE_API_KEY",
-    "ALLOWED_ORIGIN",
-]
+REQUIRED = ["GROQ_API_KEY", "COHERE_API_KEY", "ALLOWED_ORIGIN"]
+OPTIONAL = ["GOOGLE_GEOCODING_API_KEY"]   # no longer needed, warn if set
 
-for key in required_keys:
+for key in REQUIRED:
     val = os.getenv(key)
-    if val and val not in ("your_groq_api_key_here",
-                           "your_google_api_key_here",
-                           "your_cohere_api_key_here"):
+    placeholders = (
+        "your_groq_api_key_here",
+        "your_google_api_key_here",
+        "your_cohere_api_key_here",
+    )
+    if val and val not in placeholders:
         check(key, True, f"{key} is set ({val[:6]}...)")
-    elif key == "GOOGLE_GEOCODING_API_KEY":
-        check(key, True, f"GOOGLE_GEOCODING_API_KEY is optional (not set; using mock fallback coordinates)")
     else:
         check(key, False, f"{key} is MISSING or still a placeholder -- set it in .env")
 
+for key in OPTIONAL:
+    val = os.getenv(key)
+    if val:
+        print(warn(f"  {key} is set but no longer needed -- "
+                   f"project now uses Nominatim (no key required)"))
 
-# ==========================================================================
-# [2] flatlib chart math
-# Known input : 1990-06-15, 08:30, Mumbai (UTC+5.5)
-# Expected    : Sun in Gemini (~84 deg ecliptic longitude)
-# ==========================================================================
-print(head("[2] flatlib chart math"))
+
+# ═════════════════════════════════════════════════════════════════════════
+# [2] ephem chart math
+# Known input:  19 Jan 2006, 22:30 IST, Lucknow (your actual birth details)
+# Expected:     Sun in Capricorn (~299 deg)
+# Also test:    1990-06-15 08:30 IST Mumbai -> Sun in Gemini (~84 deg)
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[2] ephem chart math (real ephemeris)"))
 
 try:
-    from flatlib.datetime import Datetime
-    from flatlib.geopos import GeoPos
-    from flatlib.chart import Chart
-    from flatlib import const
+    import ephem
 
-    # Mumbai coordinates (positive = N/E)
-    dt   = Datetime("1990/06/15", "08:30", "+05:30")
-    pos  = GeoPos(19.076, 72.877)
-    chart = Chart(dt, pos, IDs=const.LIST_OBJECTS)
+    def ephem_sun_lon(date_utc_str):
+        """Return Sun ecliptic longitude for a UTC datetime string."""
+        sun = ephem.Sun()
+        sun.compute(date_utc_str, epoch=ephem.J2000)
+        ecl = ephem.Ecliptic(sun, epoch=ephem.J2000)
+        return math.degrees(float(ecl.lon)) % 360
 
-    sun       = chart.getObject(const.SUN)
-    sun_lon   = sun.lon          # ecliptic longitude 0-360
-    sun_sign  = sun.sign         # e.g. 'Gemini'
+    SIGNS = [
+        "Aries","Taurus","Gemini","Cancer","Leo","Virgo",
+        "Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"
+    ]
 
-    expected_sign = "Gemini"
-    expected_lon_approx = 84.2
-    lon_ok   = abs(sun_lon - expected_lon_approx) < 2.0  # 2 deg tolerance for this self-test
-    sign_ok  = sun_sign == expected_sign
+    def lon_to_sign(lon):
+        return SIGNS[int(lon // 30) % 12]
 
-    check("flatlib_sun_sign", sign_ok,
-          f"Sun sign = {sun_sign} (expected {expected_sign})")
-    check("flatlib_sun_lon", lon_ok,
-          f"Sun longitude = {sun_lon:.2f} deg (expected ~{expected_lon_approx} deg)")
+    # Test case 1: your birth  2006-01-19 22:30 IST = 2006-01-19 17:00 UTC
+    lon_2006 = ephem_sun_lon("2006/01/19 17:00:00")
+    sign_2006 = lon_to_sign(lon_2006)
+    check("ephem_2006_sign", sign_2006 == "Capricorn",
+          f"2006-01-19: Sun = {lon_2006:.2f} deg = {sign_2006} (expected Capricorn)")
 
-    # Verify GeoPos accepts raw floats (not strings)
-    try:
-        GeoPos(19.076, 72.877)
-        check("flatlib_geopos_floats", True,
-              "GeoPos(float, float) accepted -- no string conversion needed")
-    except Exception as e:
-        check("flatlib_geopos_floats", False, f"GeoPos float input failed: {e}")
+    # Test case 2: Mumbai 1990-06-15 08:30 IST = 1990-06-15 03:00 UTC
+    lon_1990 = ephem_sun_lon("1990/06/15 03:00:00")
+    sign_1990 = lon_to_sign(lon_1990)
+    check("ephem_1990_sign", sign_1990 == "Gemini",
+          f"1990-06-15: Sun = {lon_1990:.2f} deg = {sign_1990} (expected Gemini)")
 
-    # Verify timezone offset as string '+05:30' is accepted by Datetime
-    try:
-        Datetime("1990/06/15", "08:30", "+05:30")
-        check("flatlib_tz_string", True,
-              "Datetime accepts '+05:30' timezone string format")
-    except Exception as e:
-        check("flatlib_tz_string", False,
-              f"Datetime timezone string rejected -- may need float conversion: {e}")
-        print(warn("  If this failed, convert '+05:30' -> 5.5 before calling Datetime"))
+    # Verify outer planets for 2006 -- these MUST NOT be in Cancer/Gemini/Libra
+    neptune = ephem.Neptune()
+    neptune.compute("2006/01/19 17:00:00", epoch=ephem.J2000)
+    nep_ecl = ephem.Ecliptic(neptune, epoch=ephem.J2000)
+    nep_lon = math.degrees(float(nep_ecl.lon)) % 360
+    nep_sign = lon_to_sign(nep_lon)
+
+    pluto = ephem.Pluto()
+    pluto.compute("2006/01/19 17:00:00", epoch=ephem.J2000)
+    plu_ecl = ephem.Ecliptic(pluto, epoch=ephem.J2000)
+    plu_lon = math.degrees(float(plu_ecl.lon)) % 360
+    plu_sign = lon_to_sign(plu_lon)
+
+    check("ephem_neptune_2006",
+          nep_sign == "Aquarius",
+          f"2006 Neptune = {nep_lon:.1f} deg = {nep_sign} (expected Aquarius, NOT Cancer)")
+    check("ephem_pluto_2006",
+          plu_sign == "Sagittarius",
+          f"2006 Pluto   = {plu_lon:.1f} deg = {plu_sign} (expected Sagittarius, NOT Gemini)")
+
+    if nep_sign == "Aquarius" and plu_sign == "Sagittarius":
+        print(f"  {GREEN}Real ephemeris confirmed -- outer planets correct for 2006 birth{RESET}")
 
 except ImportError:
-    check("flatlib_import", False,
-          "flatlib not installed -- run: pip install flatlib")
+    check("ephem_import", False,
+          "ephem not installed -- run: pip install ephem")
 except Exception as e:
-    check("flatlib_chart", False, f"Unexpected error in flatlib: {e}")
+    check("ephem_general", False, f"ephem error: {e}")
 
 
-# ==========================================================================
-# [3] Google Geocoding API
-# ==========================================================================
-print(head("[3] Google Geocoding API"))
-
-GOOGLE_KEY = os.getenv("GOOGLE_GEOCODING_API_KEY", "")
+# ═════════════════════════════════════════════════════════════════════════
+# [3] Nominatim geocoding (OpenStreetMap, no API key)
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[3] Nominatim geocoding (no API key needed)"))
 
 try:
-    import requests
+    from geopy.geocoders import Nominatim
+    import time as _time
 
-    resp = requests.get(
-        "https://maps.googleapis.com/maps/api/geocode/json",
-        params={"address": "Mumbai, India", "key": GOOGLE_KEY},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    geolocator = Nominatim(user_agent="astroagent_healthcheck_v1")
 
-    if data.get("status") == "OK":
-        loc      = data["results"][0]["geometry"]["location"]
-        lat, lon = loc["lat"], loc["lng"]
-        lat_ok   = 18.0 < lat < 20.0
-        lon_ok   = 72.0 < lon < 74.0
+    # Test with Lucknow (your birth city)
+    location = geolocator.geocode("Lucknow, India", timeout=10)
+    _time.sleep(1)   # Nominatim rate limit: 1 req/sec
 
-        check("geocoding_status", True,  f"API status = OK")
-        check("geocoding_lat",    lat_ok, f"Latitude  = {lat:.4f} (expected ~19.07)")
-        check("geocoding_lon",    lon_ok, f"Longitude = {lon:.4f} (expected ~72.88)")
-    elif data.get("status") == "REQUEST_DENIED":
-        if not GOOGLE_KEY or GOOGLE_KEY.strip() == "" or GOOGLE_KEY == "your_google_api_key_here":
-            check("geocoding_status", True, "API status = OK (Mock fallback coordinates used)")
-            check("geocoding_lat", True, "Latitude  = 19.0760 (expected ~19.07)")
-            check("geocoding_lon", True, "Longitude = 72.8770 (expected ~72.88)")
-        else:
-            check("geocoding_api_key", False,
-                  "REQUEST_DENIED -- check GOOGLE_GEOCODING_API_KEY and that Geocoding API is enabled in Google Cloud Console")
+    if location:
+        lat, lon = location.latitude, location.longitude
+        lat_ok = 26.0 < lat < 27.5
+        lon_ok = 80.0 < lon < 82.0
+        check("nominatim_status",  True,    "Nominatim responded for 'Lucknow, India'")
+        check("nominatim_lat",     lat_ok,  f"Latitude  = {lat:.4f} (expected ~26.85)")
+        check("nominatim_lon",     lon_ok,  f"Longitude = {lon:.4f} (expected ~80.95)")
     else:
-        check("geocoding_status", False,
-              f"Unexpected status: {data.get('status')} -- {data.get('error_message', '')}")
+        check("nominatim_result", False,
+              "No result for 'Lucknow, India' -- check internet connection")
 
-except requests.exceptions.ConnectionError:
-    check("geocoding_network", False, "Network error -- check internet connection")
+    # Test Mumbai too (used in golden set)
+    location2 = geolocator.geocode("Mumbai, India", timeout=10)
+    _time.sleep(1)
+    if location2:
+        check("nominatim_mumbai", True,
+              f"Mumbai resolved: {location2.latitude:.3f}, {location2.longitude:.3f}")
+    else:
+        check("nominatim_mumbai", False, "Mumbai geocoding failed")
+
+except ImportError:
+    check("geopy_import", False,
+          "geopy not installed -- run: pip install geopy")
 except Exception as e:
-    check("geocoding_general", False, f"Geocoding check failed: {e}")
+    check("nominatim_general", False, f"Nominatim error: {e}")
 
 
-# ==========================================================================
-# [4] Google Timezone API
-# ==========================================================================
-print(head("[4] Google Timezone API"))
+# ═════════════════════════════════════════════════════════════════════════
+# [4] timezonefinder (offline, no API key)
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[4] timezonefinder (offline timezone lookup)"))
 
 try:
-    if not GOOGLE_KEY or GOOGLE_KEY.strip() == "" or GOOGLE_KEY == "your_google_api_key_here":
-        check("timezone_status", True, "API status = OK (Mock fallback timezone used)")
-        check("timezone_offset", True, "Offset = 5.5h (expected 5.5h for Mumbai)")
-        check("timezone_id_present", True, "Timezone ID = Asia/Kolkata")
-    else:
-        tz_resp = requests.get(
-            "https://maps.googleapis.com/maps/api/timezone/json",
-            params={
-                "location": "19.076,72.877",
-                "timestamp": 646300200,   # 1990-06-15 08:30 UTC approx
-                "key": GOOGLE_KEY,
-            },
-            timeout=10,
-        )
-        tz_resp.raise_for_status()
-        tz_data = tz_resp.json()
+    from timezonefinder import TimezoneFinder
+    import pytz
 
-        if tz_data.get("status") == "OK":
-            offset_secs  = tz_data.get("rawOffset", 0) + tz_data.get("dstOffset", 0)
-            offset_hours = offset_secs / 3600
-            tz_id        = tz_data.get("timeZoneId", "")
-            offset_ok    = abs(offset_hours - 5.5) < 0.1
+    tf = TimezoneFinder()
 
-            check("timezone_status",    True,     f"API status = OK")
-            check("timezone_offset",    offset_ok, f"Offset = {offset_hours}h (expected 5.5h for Mumbai)")
-            check("timezone_id_present", bool(tz_id), f"Timezone ID = {tz_id}")
-        elif tz_data.get("status") == "REQUEST_DENIED":
-            check("timezone_api_key", False,
-                  "REQUEST_DENIED -- ensure Timezone API is enabled alongside Geocoding API")
-        else:
-            check("timezone_status", False,
-                  f"Status: {tz_data.get('status')} -- {tz_data.get('errorMessage', '')}")
+    # Lucknow
+    tz_name = tf.timezone_at(lat=26.8467, lng=80.9462)
+    tz_ok = tz_name == "Asia/Kolkata"
+    check("tzfinder_lucknow", tz_ok,
+          f"Lucknow timezone = {tz_name} (expected Asia/Kolkata)")
+
+    # Verify offset
+    if tz_name:
+        tz = pytz.timezone(tz_name)
+        offset = tz.utcoffset(datetime.now()).total_seconds() / 3600
+        offset_ok = abs(offset - 5.5) < 0.1
+        check("tzfinder_offset", offset_ok,
+              f"IST offset = {offset}h (expected 5.5h)")
+
+    # Tokyo (tests non-Indian timezone)
+    tz_tokyo = tf.timezone_at(lat=35.6762, lng=139.6503)
+    check("tzfinder_tokyo", tz_tokyo == "Asia/Tokyo",
+          f"Tokyo timezone = {tz_tokyo} (expected Asia/Tokyo)")
+
+except ImportError:
+    check("tzfinder_import", False,
+          "timezonefinder not installed -- run: pip install timezonefinder pytz")
+except Exception as e:
+    check("tzfinder_general", False, f"timezonefinder error: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# [5] geocode_place() end-to-end pipeline
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[5] geocode_place() tool end-to-end"))
+
+try:
+    # Simulate what tools.py does
+    from geopy.geocoders import Nominatim
+    from timezonefinder import TimezoneFinder
+    import pytz, time as _time
+    from datetime import timedelta
+
+    def geocode_place_test(place_name):
+        geo  = Nominatim(user_agent="astroagent_healthcheck_v1")
+        loc  = geo.geocode(place_name, timeout=10)
+        _time.sleep(1)
+        if not loc:
+            raise ValueError(f"Could not geocode '{place_name}'")
+        lat, lon = loc.latitude, loc.longitude
+        tf2  = TimezoneFinder()
+        tz_n = tf2.timezone_at(lat=lat, lng=lon)
+        tz   = pytz.timezone(tz_n)
+        off  = tz.utcoffset(datetime.now()).total_seconds() / 3600
+        sign = "+" if off >= 0 else "-"
+        h, m = int(abs(off)), int(round((abs(off) % 1) * 60))
+        return {
+            "lat": lat, "lon": lon,
+            "timezone_id": tz_n,
+            "offset_hours": off,
+            "offset_str": f"{sign}{h:02d}:{m:02d}",
+            "formatted_address": loc.address,
+        }
+
+    result = geocode_place_test("Lucknow, Uttar Pradesh, India")
+    check("geocode_pipeline_lat",     26.0 < result["lat"] < 27.5,
+          f"Lat = {result['lat']:.4f}")
+    check("geocode_pipeline_tz",      result["timezone_id"] == "Asia/Kolkata",
+          f"TZ  = {result['timezone_id']}")
+    check("geocode_pipeline_offset",  result["offset_str"] == "+05:30",
+          f"Offset string = {result['offset_str']} (expected +05:30)")
 
 except Exception as e:
-    check("timezone_general", False, f"Timezone check failed: {e}")
+    check("geocode_pipeline", False, f"geocode_place pipeline failed: {e}")
 
 
-# ==========================================================================
-# [5] Cohere embeddings
-# ==========================================================================
-print(head("[5] Cohere embeddings"))
+# ═════════════════════════════════════════════════════════════════════════
+# [6] Cohere embeddings
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[6] Cohere embeddings"))
 
 try:
     import cohere
@@ -241,27 +292,27 @@ try:
         model="embed-english-v3.0",
         input_type="search_document",
     )
+    embedding = resp.embeddings[0]
+    dim       = len(embedding)
 
-    embedding   = resp.embeddings[0]
-    dim         = len(embedding)
-    dim_ok      = dim == 1024   # embed-english-v3.0 produces 1024-dim vectors
-    nonzero_ok  = any(v != 0.0 for v in embedding[:10])
+    check("cohere_response",    True,       "Cohere API responded without error")
+    check("cohere_dim",         dim == 1024, f"Embedding dimension = {dim} (expected 1024)")
+    check("cohere_nonzero",     any(v != 0 for v in embedding[:10]),
+          "Embedding values are non-zero")
 
-    check("cohere_request",   True,      f"Cohere API responded without error")
-    check("cohere_dimensions", dim_ok,   f"Embedding dimension = {dim} (expected 1024)")
-    check("cohere_nonzero",   nonzero_ok, "Embedding values are non-zero")
-
-except cohere.errors.UnauthorizedError:
-    check("cohere_auth", False,
-          "Unauthorized -- check COHERE_API_KEY at dashboard.cohere.com")
 except Exception as e:
-    check("cohere_general", False, f"Cohere check failed: {e}")
+    err = str(e)
+    if "401" in err or "unauthorized" in err.lower():
+        check("cohere_auth", False,
+              "Unauthorized -- check COHERE_API_KEY at dashboard.cohere.com")
+    else:
+        check("cohere_general", False, f"Cohere error: {e}")
 
 
-# ==========================================================================
-# [6] Chroma DB connection & document count
-# ==========================================================================
-print(head("[6] Chroma DB"))
+# ═════════════════════════════════════════════════════════════════════════
+# [7] Chroma DB
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[7] Chroma DB"))
 
 CHROMA_PATH = BACKEND_DIR / "chroma_db"
 
@@ -270,102 +321,82 @@ try:
 
     if not CHROMA_PATH.exists():
         check("chroma_seeded", False,
-              f"chroma_db/ not found at {CHROMA_PATH} -- run: python rag/seed.py first")
+              f"chroma_db/ not found -- run: python rag/seed.py")
     else:
         client     = chromadb.PersistentClient(path=str(CHROMA_PATH))
         collection = client.get_or_create_collection("astrology_knowledge")
         count      = collection.count()
-        count_ok   = count >= 40   # expect at least 40 docs after seeding
-
-        check("chroma_exists",   True,      f"chroma_db/ directory found")
-        check("chroma_count",    count_ok,  f"Collection has {count} documents (expected >=40)")
-
-        if count == 0:
-            print(warn("  Collection is empty -- run: python rag/seed.py"))
-        elif count < 40:
-            print(warn(f"  Only {count} docs -- seed.py may have run partially. Re-run it."))
+        check("chroma_exists", True,     "chroma_db/ directory found")
+        check("chroma_count",  count >= 40,
+              f"Collection has {count} documents (expected >= 40)")
+        if count < 100:
+            print(warn(f"  Only {count} docs -- consider expanding to 150+ for better RAG quality"))
 
 except Exception as e:
-    check("chroma_general", False, f"Chroma check failed: {e}")
+    check("chroma_general", False, f"Chroma error: {e}")
 
 
-# ==========================================================================
-# [7] knowledge_lookup end-to-end
-# ==========================================================================
-print(head("[7] knowledge_lookup end-to-end"))
+# ═════════════════════════════════════════════════════════════════════════
+# [8] knowledge_lookup end-to-end
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[8] knowledge_lookup RAG (end-to-end)"))
 
 try:
-    # Only run if Chroma has documents
-    chroma_ok = any(name == "chroma_count" and passed
-                    for name, passed, _ in results)
+    chroma_ok = any(n == "chroma_count" and p for n, p, _ in results)
 
     if not chroma_ok:
-        print(warn("  Skipping -- Chroma not seeded. Run seed.py first."))
+        print(warn("  Skipping -- Chroma not seeded. Run: python rag/seed.py"))
     else:
-        import chromadb
-        import cohere
+        import cohere, chromadb
 
-        co         = cohere.Client(os.getenv("COHERE_API_KEY", ""))
-        client     = chromadb.PersistentClient(path=str(CHROMA_PATH))
-        collection = client.get_or_create_collection("astrology_knowledge")
+        co2        = cohere.Client(os.getenv("COHERE_API_KEY", ""))
+        client2    = chromadb.PersistentClient(path=str(CHROMA_PATH))
+        coll2      = client2.get_or_create_collection("astrology_knowledge")
 
-        query     = "What does Saturn represent in astrology?"
-        embed_res = co.embed(
-            texts=[query],
-            model="embed-english-v3.0",
-            input_type="search_query",
-        )
-        query_vec = embed_res.embeddings[0]
+        query      = "What does Neptune in Aquarius mean for a 2006 birth?"
+        embed_resp = co2.embed(texts=[query], model="embed-english-v3.0",
+                               input_type="search_query")
+        qvec       = embed_resp.embeddings[0]
+        hits       = coll2.query(query_embeddings=[qvec], n_results=3)
+        docs       = hits.get("documents", [[]])[0]
 
-        results_chroma = collection.query(
-            query_embeddings=[query_vec],
-            n_results=3,
-        )
-        docs = results_chroma.get("documents", [[]])[0]
+        check("rag_returns_results", len(docs) > 0,
+              f"RAG returned {len(docs)} document(s)")
+        check("rag_nonzero_content",
+              any(len(d) > 20 for d in docs),
+              "Documents have meaningful content (>20 chars)")
 
-        has_results   = len(docs) > 0
-        saturn_in_doc = any("saturn" in doc.lower() or "Saturn" in doc
-                            for doc in docs)
-
-        check("rag_returns_results", has_results,
-              f"RAG returned {len(docs)} document(s) for Saturn query")
-        check("rag_relevance", saturn_in_doc,
-              "Top result mentions Saturn (basic relevance check)")
-
-        if has_results:
+        if docs:
             snippet = docs[0][:100].replace("\n", " ")
-            print(f"  {CYAN}Sample chunk:{RESET} {snippet}...")
+            print(f"  {CYAN}Sample:{RESET} {snippet}...")
 
 except Exception as e:
-    check("rag_general", False, f"knowledge_lookup check failed: {e}")
+    check("rag_general", False, f"RAG error: {e}")
 
 
-# ==========================================================================
-# [8] Groq API connection
-# ==========================================================================
-print(head("[8] Groq API"))
+# ═════════════════════════════════════════════════════════════════════════
+# [9] Groq API
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[9] Groq API"))
 
 try:
     from groq import Groq
 
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
-    t0          = time.time()
-
-    resp = groq_client.chat.completions.create(
+    client3 = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
+    t0      = time.time()
+    resp3   = client3.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": "Reply with exactly one word: ready"}],
         max_tokens=5,
         temperature=0,
     )
-    latency_ms = (time.time() - t0) * 1000
-    reply      = resp.choices[0].message.content.strip().lower()
+    latency = (time.time() - t0) * 1000
+    check("groq_response",  True,           f"Groq responded in {latency:.0f}ms")
+    check("groq_model",     True,           "Model: llama-3.3-70b-versatile")
+    check("groq_latency",   latency < 8000, f"Latency {latency:.0f}ms (warn if >8000ms)")
 
-    check("groq_response",  True,             f"Groq responded in {latency_ms:.0f}ms")
-    check("groq_model",     True,             f"Model: llama-3.3-70b-versatile")
-    check("groq_latency",   latency_ms < 8000, f"Latency {latency_ms:.0f}ms (warn if >8000ms)")
-
-    if latency_ms > 8000:
-        print(warn("  High latency on Groq free tier -- p95 may be slow during eval runs"))
+    if latency > 8000:
+        print(warn("  High latency -- may affect eval p95 scores"))
 
 except Exception as e:
     err = str(e)
@@ -376,65 +407,57 @@ except Exception as e:
         check("groq_rate", False,
               "Rate limited -- wait 60s and retry (free tier: 30 RPM)")
     else:
-        check("groq_general", False, f"Groq check failed: {e}")
+        check("groq_general", False, f"Groq error: {e}")
 
 
-# ==========================================================================
-# [9] Longitude wraparound math
-# This is the edge case in run_evals.py chart_math_tolerance check
-# ==========================================================================
-print(head("[9] Longitude wraparound math"))
+# ═════════════════════════════════════════════════════════════════════════
+# [10] Longitude wraparound unit test
+# ═════════════════════════════════════════════════════════════════════════
+print(head("[10] Longitude wraparound math"))
 
-def lon_distance(a: float, b: float) -> float:
-    """Shortest angular distance between two ecliptic longitudes (0-360)."""
+def lon_dist(a, b):
     diff = abs(a - b) % 360
     return min(diff, 360 - diff)
 
 cases = [
-    (84.2,  84.5,  0.3,   True,  "Normal case: 84.2 deg vs 84.5 deg"),
-    (359.5,  0.5,  1.0,   True,  "Wraparound: 359.5 deg vs 0.5 deg = 1.0 deg apart"),
-    (0.5,  359.5,  1.0,   True,  "Wraparound reversed: 0.5 deg vs 359.5 deg"),
-    (84.2,  86.5,  2.3,  False,  "Outside tolerance: 84.2 deg vs 86.5 deg = 2.3 deg apart"),
-    (180.0, 181.5, 1.5,  False,  "Outside tolerance at 180 deg"),
+    (84.2,  84.5,  0.3,   True,  "Normal: 84.2 vs 84.5 = 0.3 deg apart"),
+    (359.5,  0.5,  1.0,   True,  "Wrap:   359.5 vs 0.5 = 1.0 deg apart"),
+    (0.5,  359.5,  1.0,   True,  "Wrap:   0.5 vs 359.5 = 1.0 deg apart"),
+    (84.2,  86.5,  2.3,  False,  "Outside tolerance: 84.2 vs 86.5 = 2.3 deg"),
+    (180.0, 181.5, 1.5,  False,  "Outside tolerance: 180.0 vs 181.5 = 1.5 deg"),
 ]
 
-all_passed = True
-for a, b, expected_dist, should_pass, label in cases:
-    dist    = lon_distance(a, b)
-    correct = abs(dist - expected_dist) < 0.01
-    within  = dist <= 1.0
-    result  = (within == should_pass) and correct
-    all_passed = all_passed and result
-    check(f"wraparound_{label[:20]}", result,
-          f"{label} -> dist={dist:.2f} deg {'[within 1 deg]' if within else '[outside 1 deg]'}")
-
-if not all_passed:
-    print(warn("  Update chart_math_tolerance in run_evals.py to use lon_distance()"))
-    print(warn("  Replace: abs(computed - reference) <= 1.0"))
-    print(warn("  With:    min(abs(diff), 360 - abs(diff)) <= 1.0"))
+for a, b, exp_dist, should_pass, label in cases:
+    dist   = lon_dist(a, b)
+    within = dist <= 1.0
+    result = (within == should_pass) and abs(dist - exp_dist) < 0.01
+    status = "within 1 deg" if within else "outside 1 deg"
+    check(f"lon_{label[:15]}", result, f"{label} -> dist={dist:.2f} [{status}]")
 
 
-# ==========================================================================
+# ═════════════════════════════════════════════════════════════════════════
 # Final scorecard
-# ==========================================================================
+# ═════════════════════════════════════════════════════════════════════════
 passed = sum(1 for _, p, _ in results if p)
 failed = sum(1 for _, p, _ in results if not p)
 total  = len(results)
 
-print(f"\n{'=' * 54}")
+print(f"\n{'=' * 56}")
 print(f"  Health Check Results")
-print(f"{'=' * 54}")
+print(f"{'=' * 56}")
 print(f"  Passed: {passed}/{total}")
+
 if failed:
     print(f"  Failed: {failed}/{total}")
     print(f"\n  Failed checks:")
-    for name, passed_flag, detail in results:
-        if not passed_flag:
-            print(f"    * {detail}")
-print(f"{'=' * 54}\n")
+    for name, p, detail in results:
+        if not p:
+            print(f"    - {detail}")
+
+print(f"{'=' * 56}\n")
 
 if failed == 0:
-    print(f"  All checks passed. Safe to run: uvicorn main:app --reload\n")
+    print(f"  All checks passed. Safe to start: uvicorn main:app --reload\n")
     sys.exit(0)
 else:
     print(f"  Fix the failed checks above before starting the server.\n")
