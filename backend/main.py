@@ -37,11 +37,14 @@ app = FastAPI(title="AstroAgent API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Configure CORS Whitelist
+# Configure CORS Whitelist — supports comma-separated origins
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:5173")
+origins = [o.strip() for o in ALLOWED_ORIGIN.split(",") if o.strip()]
+if "http://localhost:5173" not in origins:
+    origins.append("http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

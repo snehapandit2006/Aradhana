@@ -64,40 +64,47 @@ def compute_birth_chart(date: str, time: Optional[str], place: str, time_unknown
     time: HH:MM
     place: City/Town name
     """
-    # Resolve place to lat, lon, timezone
-    geo_data = geocode_place(place)
-    lat = geo_data["lat"]
-    lon = geo_data["lon"]
-    offset_hours = geo_data["timezone_offset_hours"]
-    offset_str = geo_data["timezone_offset"]
-    
-    # Handle unknown birth time by defaulting to noon
-    time_str = "12:00" if (time_unknown or not time) else time
-    
-    # Compute using ephemeris module
-    ephem_chart = compute_chart(date, time_str, lat, lon, offset_hours)
-    
-    # Convert houses to expected format
-    houses_data = {}
-    from astro.ephemeris import longitude_to_sign
-    for i in range(1, 13):
-        h_lon = float(ephem_chart["houses"][str(i)])
-        h_sign, h_deg = longitude_to_sign(h_lon)
-        houses_data[f"House{i}"] = {
-            "sign": h_sign,
-            "degree": round(h_deg, 2),
-            "longitude": round(h_lon, 2)
-        }
+    try:
+        # Resolve place to lat, lon, timezone
+        geo_data = geocode_place(place)
+        lat = geo_data["lat"]
+        lon = geo_data["lon"]
+        offset_hours = geo_data["timezone_offset_hours"]
+        offset_str = geo_data["timezone_offset"]
         
-    return {
-        "formatted_address": geo_data["formatted_address"],
-        "coordinates": {"lat": lat, "lon": lon},
-        "timezone_offset": offset_str,
-        "timezone_offset_hours": offset_hours,
-        "planets": ephem_chart["planets"],
-        "ascendant": ephem_chart["ascendant"],
-        "houses": houses_data
-    }
+        # Handle unknown birth time by defaulting to noon
+        time_str = "12:00" if (time_unknown or not time) else time
+        
+        # Compute using ephemeris module
+        ephem_chart = compute_chart(date, time_str, lat, lon, offset_hours)
+        
+        # Convert houses to expected format
+        houses_data = {}
+        from astro.ephemeris import longitude_to_sign
+        for i in range(1, 13):
+            h_lon = float(ephem_chart["houses"][str(i)])
+            h_sign, h_deg = longitude_to_sign(h_lon)
+            houses_data[f"House{i}"] = {
+                "sign": h_sign,
+                "degree": round(h_deg, 2),
+                "longitude": round(h_lon, 2)
+            }
+            
+        return {
+            "formatted_address": geo_data["formatted_address"],
+            "coordinates": {"lat": lat, "lon": lon},
+            "timezone_offset": offset_str,
+            "timezone_offset_hours": offset_hours,
+            "planets": ephem_chart["planets"],
+            "ascendant": ephem_chart["ascendant"],
+            "houses": houses_data
+        }
+    except Exception as e:
+        import traceback
+        print(f"[compute_birth_chart ERROR] {e}")
+        traceback.print_exc()
+        return {"error": str(e)}
+
 
 def get_daily_transits(natal_chart: dict, date: str) -> dict:
     """

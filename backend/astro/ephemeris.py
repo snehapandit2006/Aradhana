@@ -15,7 +15,7 @@ Usage:
 import ephem
 from datetime import datetime, timezone
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ EPHEM_PLANETS = {
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
-def longitude_to_sign(lon_deg: float) -> tuple[str, float]:
+def longitude_to_sign(lon_deg: float) -> Tuple[str, float]:
     """
     Convert ecliptic longitude (0–360°) to zodiac sign and degree within sign.
 
@@ -326,10 +326,12 @@ def compute_transits(
         }
     """
     # Build observer at noon UTC for the transit date (location-independent)
+    # ephem expects dates in YYYY/MM/DD format — convert dashes to slashes
+    ephem_date_str = date_str.replace("-", "/")
     observer = ephem.Observer()
     observer.lat     = str(lat)
     observer.lon     = str(lon)
-    observer.date    = f"{date_str} 12:00:00"
+    observer.date    = f"{ephem_date_str} 12:00:00"
     observer.pressure = 0
 
     # Compute transit positions
