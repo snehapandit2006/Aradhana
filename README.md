@@ -1,5 +1,9 @@
 # AstroAgent — Daily Spiritual Astrology Companion
 
+**Live Application Links:**
+- **Frontend Web App:** [https://aradhana-nine.vercel.app](https://aradhana-nine.vercel.app)
+- **Backend API & Swagger Docs:** [https://aradhana-2m0c.onrender.com/docs](https://aradhana-2m0c.onrender.com/docs)
+
 AstroAgent is a daily spiritual astrology guide built using a full-stack architecture. It geocodes birth locations using free OpenStreetMap/Nominatim services, computes highly accurate birth charts using offline `ephem` calculations, references traditional astrological knowledge using RAG (with 162 detailed entries), and persists conversation histories safely in a local SQLite database.
 
 ---
