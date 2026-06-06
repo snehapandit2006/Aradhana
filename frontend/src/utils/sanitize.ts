@@ -6,7 +6,11 @@ import DOMPurify from 'dompurify';
 export const sanitizeHTML = (html: string): string => {
   if (!html) return '';
   return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'a', 'p', 'br', 'ul', 'li', 'ol', 'span'],
+    ALLOWED_TAGS: [
+      'b', 'i', 'em', 'strong', 'a', 'p', 'br', 'ul', 'li', 'ol', 'span',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'div',
+      'h1', 'h2', 'h3', 'h4',
+    ],
     ALLOWED_ATTR: ['href', 'target', 'class'],
     USE_PROFILES: { html: true }
   });

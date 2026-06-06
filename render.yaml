@@ -12,4 +12,4 @@ services:
       - key: DATABASE_URL
         value: ./astroagent.db
       - key: ALLOWED_ORIGIN
-        value: https://your-vercel-app-url.vercel.app # Configure to match your Vercel deployment URL
+        value: https://aradhana-nine.vercel.app

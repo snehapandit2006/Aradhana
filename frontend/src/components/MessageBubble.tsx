@@ -10,22 +10,98 @@ interface MessageBubbleProps {
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
   const isUser = message.role === 'user';
 
-  // Basic inline markdown-to-HTML parser (bold, italics, line breaks)
+  // Enhanced markdown-to-HTML parser for rich chart content
   const renderContent = (text: string) => {
-    let html = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    
-    // Replace **text** with <strong>text</strong>
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-white">$1</strong>');
-    
-    // Replace *text* with <em>text</em>
-    html = html.replace(/\*(.*?)\*/g, '<em class="italic text-cosmic-gold">$1</em>');
-    
-    // Replace linebreaks with br
-    html = html.replace(/\n/g, '<br />');
+    // Split into lines for block-level processing
+    const lines = text.split('\n');
+    const outputLines: string[] = [];
+    let inTable = false;
+    let tableRows: string[] = [];
 
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Inline formatting (bold, italic)
+    const inlineFormat = (s: string) => {
+      let out = escapeHtml(s);
+      out = out.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-white">$1</strong>');
+      out = out.replace(/\*(.*?)\*/g, '<em class="italic text-cosmic-gold">$1</em>');
+      return out;
+    };
+
+    const flushTable = () => {
+      if (tableRows.length === 0) return;
+      // First row = header, second row = separator (skip), rest = body
+      const headerCells = tableRows[0].split('|').map(c => c.trim()).filter(Boolean);
+      const bodyRows = tableRows.slice(2); // skip separator row
+      let tableHtml = '<div class="overflow-x-auto my-2"><table class="w-full text-xs border-collapse">';
+      tableHtml += '<thead><tr>';
+      headerCells.forEach(cell => {
+        tableHtml += `<th class="border border-cosmic-lavender/20 px-2 py-1 text-cosmic-gold text-left">${inlineFormat(cell)}</th>`;
+      });
+      tableHtml += '</tr></thead><tbody>';
+      bodyRows.forEach(row => {
+        const cells = row.split('|').map(c => c.trim()).filter(Boolean);
+        tableHtml += '<tr>';
+        cells.forEach(cell => {
+          tableHtml += `<td class="border border-cosmic-lavender/20 px-2 py-1">${inlineFormat(cell)}</td>`;
+        });
+        tableHtml += '</tr>';
+      });
+      tableHtml += '</tbody></table></div>';
+      outputLines.push(tableHtml);
+      tableRows = [];
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Detect markdown tables (lines containing |)
+      if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+        inTable = true;
+        tableRows.push(trimmed);
+        continue;
+      } else if (inTable) {
+        flushTable();
+        inTable = false;
+      }
+
+      // Headers
+      if (trimmed.startsWith('### ')) {
+        outputLines.push(`<p class="text-sm font-semibold text-cosmic-gold mt-3 mb-1">${inlineFormat(trimmed.slice(4))}</p>`);
+      } else if (trimmed.startsWith('## ')) {
+        outputLines.push(`<p class="text-base font-semibold text-cosmic-gold mt-3 mb-1">${inlineFormat(trimmed.slice(3))}</p>`);
+      } else if (trimmed.startsWith('# ')) {
+        outputLines.push(`<p class="text-lg font-bold text-cosmic-gold mt-3 mb-1">${inlineFormat(trimmed.slice(2))}</p>`);
+      }
+      // Horizontal rule
+      else if (/^[-*_]{3,}$/.test(trimmed)) {
+        outputLines.push('<hr class="border-cosmic-lavender/20 my-2" />');
+      }
+      // Unordered list items
+      else if (/^[-*] /.test(trimmed)) {
+        outputLines.push(`<li class="ml-4 list-disc">${inlineFormat(trimmed.slice(2))}</li>`);
+      }
+      // Ordered list items
+      else if (/^\d+\.\s/.test(trimmed)) {
+        const content = trimmed.replace(/^\d+\.\s/, '');
+        outputLines.push(`<li class="ml-4 list-decimal">${inlineFormat(content)}</li>`);
+      }
+      // Empty line = paragraph break
+      else if (trimmed === '') {
+        outputLines.push('<br />');
+      }
+      // Normal text
+      else {
+        outputLines.push(inlineFormat(trimmed) + '<br />');
+      }
+    }
+
+    // Flush any remaining table
+    if (inTable) flushTable();
+
+    const html = outputLines.join('\n');
     const cleanHtml = sanitizeHTML(html);
     return <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />;
   };

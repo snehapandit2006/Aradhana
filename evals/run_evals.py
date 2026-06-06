@@ -246,7 +246,7 @@ async def execute_evals():
         for f in failures:
             print(f"    - [{f['id']}] {f['name']} ({f['latency_s']}s)")
     else:
-        print("\n  All tests passed! ✅")
+        print("\n  All tests passed! [PASS]")
 
     print("=" * 50 + "\n")
 
